@@ -10,24 +10,47 @@ import { sendEmail } from "../utils/email.js";
 
 const router = express.Router();
 
-const isDeadlineValid = (deadline) => {
-  const d = new Date(deadline);
-  return d.getTime() >= new Date().setHours(0, 0, 0, 0);
-};
-
 router.get("/approved", async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 12));
     const skip = (page - 1) * limit;
 
-    const all = await Campaign.find({
+    const { category, search, sort } = req.query;
+
+    const query = {
       status: "approved",
       suspended: false,
-    });
-    const active = all.filter((c) => isDeadlineValid(c.deadline));
-    const total = active.length;
-    const campaigns = active.slice(skip, skip + limit);
+    };
+
+    if (category && category !== "All") {
+      query.category = category;
+    }
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      query.$or = [
+        { campaign_title: searchRegex },
+        { creator_name: searchRegex },
+        { campaign_story: searchRegex },
+      ];
+    }
+
+    // Add deadline filter to query to exclude expired campaigns at DB level
+    const today = new Date().toISOString().split('T')[0];
+    query.deadline = { $gte: today };
+
+    let sortOption = { createdAt: -1 };
+    if (sort === "oldest") sortOption = { createdAt: 1 };
+    else if (sort === "most-funded") sortOption = { amount_raised: -1 };
+    else if (sort === "least-funded") sortOption = { amount_raised: 1 };
+    else if (sort === "ending-soon") sortOption = { deadline: 1 };
+    else if (sort === "newest") sortOption = { createdAt: -1 };
+
+    const [total, campaigns] = await Promise.all([
+      Campaign.countDocuments(query),
+      Campaign.find(query).sort(sortOption).skip(skip).limit(limit),
+    ]);
 
     res.json({ campaigns, total, page, limit, totalPages: Math.ceil(total / limit) });
   } catch (error) {
